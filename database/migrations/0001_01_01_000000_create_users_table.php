@@ -6,24 +6,18 @@ use Illuminate\Support\Facades\Schema;
 
 return new class extends Migration
 {
-    /**
-     * Run the migrations.
-     */
     public function up(): void
     {
         Schema::create('users', function (Blueprint $table) {
             $table->id();
             $table->string('name');
-            $table->string('username')->unique(); // Kolom login kustom pengganti email, wajib unik!
+            $table->string('username')->unique(); // Untuk login kasir kustom
             $table->string('password');
-            $table->rememberToken(); // Kolom wajib jika kamu mencentang fitur "Ingat Saya" saat login
+            $table->rememberToken();
             $table->timestamps();
         });
     }
 
-    /**
-     * Reverse the migrations.
-     */
     public function down(): void
     {
         Schema::dropIfExists('users');

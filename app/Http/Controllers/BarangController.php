@@ -9,34 +9,83 @@ use Illuminate\Support\Facades\DB;
 
 class BarangController extends Controller
 {
-    // Halaman Inventaris Utama
+    /**
+     * Halaman Inventaris Utama
+     * Menampilkan 10 data per halaman dengan pencarian ILIKE (Postgres Aman)
+     */
     public function index(Request $request) {
         $search = $request->input('search');
+        
         $items = Barang::when($search, function ($query) use ($search) {
-            return $query->where('nama_barang', 'like', "%{$search}%")
-                         ->orWhere('kode_barang', 'like', "%{$search}%");
-        })->latest()->paginate(10);
+            return $query->where('nama_barang', 'ILIKE', "%{$search}%")
+                         ->orWhere('kode_barang', 'ILIKE', "%{$search}%");
+        })->latest()->paginate(10)->withQueryString();
 
         return view('inventaris', compact('items'));
     }
 
-    // Fungsi POS Baru (Untuk menampilkan halaman kasir)
-    public function pos() {
-        // Mengambil semua barang untuk pilihan di kasir
-        $items = Barang::where('stok', '>', 0)->get(); 
+    /**
+     * Fungsi POS AJAX (Untuk menampilkan halaman kasir anti-lag)
+     * Mengambil data per 12 item sesuai request pagination JavaScript
+     */
+    public function pos(Request $request) {
+        $query = Barang::query()->where('stok', '>', 0);
+
+        if ($request->has('search') && $request->search != '') {
+            $query->where(function($q) use ($request) {
+                $q->where('nama_barang', 'ILIKE', '%' . $request->search . '%')
+                  ->orWhere('kode_barang', 'ILIKE', '%' . $request->search . '%');
+            });
+        }
+
+        // Batasi 12 item per halaman kasir
+        $items = $query->orderBy('nama_barang', 'asc')->paginate(100);
+
+        // Jika dipanggil lewat AJAX Fetch di halaman kasir
+        if ($request->ajax()) {
+            return response()->json([
+                'items'        => $items->items(),
+                'current_page' => $items->currentPage(),
+                'last_page'    => $items->lastPage(),
+                'from'         => $items->firstItem(),
+                'to'           => $items->lastItem(),
+                'total'        => $items->total(),
+            ]);
+        }
+
         return view('pos', compact('items'));
     }
 
+    /**
+     * Simpan Barang Baru (Mode Tambah)
+     */
     public function store(Request $request) {
-        Barang::create($request->all());
-        return back()->with('success', 'Barang berhasil ditambah!');
+        $request->validate([
+            'kode_barang' => 'required|unique:barangs,kode_barang',
+            'nama_barang' => 'required',
+            'stok'        => 'required|numeric|min:0',
+            'harga1'      => 'required|numeric|min:0',
+        ]);
+
+        Barang::create([
+            'kode_barang' => $request->kode_barang,
+            'nama_barang' => $request->nama_barang,
+            'kategori'    => $request->kategori ?? 'UMUM',
+            'stok'        => $request->stok,
+            'harga1'      => $request->harga1,
+        ]);
+
+        return back()->with('success', 'Barang baru berhasil berkah ditambahkan!');
     }
 
+    /**
+     * Update Data Barang (Mode Edit)
+     */
     public function update(Request $request, $id)
     {
         $request->validate([
             'nama_barang' => 'required',
-            'harga1'      => 'required|numeric',
+            'harga1'      => 'required|numeric|min:0',
             'stok'        => 'required|numeric|min:0',
         ]);
 
@@ -46,140 +95,114 @@ class BarangController extends Controller
             'nama_barang' => $request->nama_barang,
             'harga1'      => $request->harga1,
             'stok'        => $request->stok,
-            'kategori'    => $request->kategori,
+            'kategori'    => $request->kategori ?? 'UMUM',
             'kode_barang' => $request->kode_barang,
         ]);
 
         return back()->with('success', 'Stok dan data barang berhasil diperbarui!');
     }
 
+    /**
+     * Hapus Satu Barang
+     */
     public function destroy($id) {
-        Barang::destroy($id);
-        return back()->with('success', 'Barang dihapus!');
+        $item = Barang::findOrFail($id);
+        $item->delete();
+        return back()->with('success', 'Barang berhasil dihapus!');
     }
 
-    // Update Fungsi Transaksi: Mendukung Jual Cepat & POS
-   public function transaksi(Request $request) {
-    // 1. Ambil data cart dari request (dikirim via AJAX dari halaman POS)
-    $cart = $request->input('cart'); 
+    /**
+     * Proses Transaksi Kasir POS (Stok Terpotong Aman & Catat Laporan)
+     */
+    public function transaksi(Request $request) {
+        $cart = $request->input('cart'); 
 
-    if (!$cart || count($cart) == 0) {
-        return response()->json(['message' => 'Keranjang kosong!'], 400);
-    }
+        if (!$cart || count($cart) == 0) {
+            return response()->json(['message' => 'Keranjang masih kosong!'], 400);
+        }
 
-    try {
-        DB::transaction(function () use ($cart) {
-            foreach ($cart as $item) {
-                $barang = Barang::findOrFail($item['id']);
-
-                // 2. Cek apakah stok cukup
-                if ($barang->stok < $item['qty']) {
-                    throw new \Exception("Stok {$barang->nama_barang} tidak mencukupi!");
-                }
-
-                // 3. Kurangi stok barang
-                $barang->decrement('stok', $item['qty']);
-
-                // 4. Catat ke tabel penjualan agar Laporan otomatis terupdate
-                Penjualan::create([
-                    'barang_id' => $barang->id,
-                    'jumlah' => $item['qty'],
-                    'total_harga' => $barang->harga1 * $item['qty'],
-                    'tanggal_jual' => now(), // Mengambil waktu sekarang
-                ]);
-            }
-        });
-
-        return response()->json(['message' => 'Transaksi Berhasil & Stok Terupdate!']);
-    } catch (\Exception $e) {
-        return response()->json(['message' => $e->getMessage()], 500);
-    }
-
-
-        // Cek apakah ini transaksi dari POS (Array Barang)
-        if ($request->has('cart')) {
-            DB::transaction(function () use ($request) {
-                foreach ($request->cart as $item) {
+        try {
+            DB::transaction(function () use ($cart) {
+                foreach ($cart as $item) {
                     $barang = Barang::findOrFail($item['id']);
+
+                    // Proteksi ganda: Cek kecukupan stok fisik di gudang
+                    if ($barang->stok < $item['qty']) {
+                        throw new \Exception("Stok {$barang->nama_barang} tidak mencukupi!");
+                    }
+
+                    // Kurangi stok barang asli
                     $barang->decrement('stok', $item['qty']);
-                    
+
+                    // Catat riwayat ke tabel penjualan untuk Laporan
                     Penjualan::create([
-                        'barang_id' => $barang->id,
-                        'jumlah' => $item['qty'],
-                        'total_harga' => $barang->harga1 * $item['qty'],
-                        'tanggal_jual' => now()->format('Y-m-d'),
+                        'barang_id'    => $barang->id,
+                        'jumlah'       => $item['qty'],
+                        'total_harga'  => $barang->harga1 * $item['qty'],
+                        'tanggal_jual' => now(),
                     ]);
                 }
             });
-            return response()->json(['message' => 'Transaksi POS Berhasil']);
+
+            return response()->json(['message' => 'Transaksi Berhasil & Stok Terupdate!']);
+        } catch (\Exception $e) {
+            return response()->json(['message' => $e->getMessage()], 500);
         }
-        
-        return back()->with('error', 'Data transaksi tidak valid');
     }
+
+    /**
+     * Halaman Laporan Manajemen Keuangan POS
+     */
     public function laporan(Request $request)
-{
-    // 1. Ambil inputan filter dari user (jika tidak ada, default hari ini)
-    $filterType = $request->input('filter_type', 'hari_ini'); 
-    $selectedDate = $request->input('tanggal'); // format: YYYY-MM-DD
-    $selectedMonth = $request->input('bulan', date('m')); 
-    $selectedYear = $request->input('tahun', date('Y'));
+    {
+        $filterType = $request->input('filter_type', 'hari_ini'); 
+        $selectedDate = $request->input('tanggal'); 
+        $selectedMonth = $request->input('bulan', date('m')); 
+        $selectedYear = $request->input('tahun', date('Y'));
 
-    // Query dasar untuk mengambil data transaksi / penjualan
-    // (Asumsi kamu punya tabel 'transaksis' atau 'penjualans' yang mencatat total harga penjualan)
-    $queryPenjualan = DB::table('transaksis'); 
+        $queryPenjualan = DB::table('transaksis'); 
 
-    // 2. Logika Pemrosesan Filter Waktu
-    if ($filterType === 'hari_ini') {
-        $queryPenjualan->whereDate('created_at', now()->today());
-        $labelWaktu = "Hari Ini (" . now()->format('d M Y') . ")";
-    } elseif ($filterType === 'kustom_tanggal' && $selectedDate) {
-        $queryPenjualan->whereDate('created_at', $selectedDate);
-        $labelWaktu = "Tanggal " . date('d M Y', strtotime($selectedDate));
-    } elseif ($filterType === 'bulanan') {
-        $queryPenjualan->whereMonth('created_at', $selectedMonth)
-                       ->whereYear('created_at', $selectedYear);
-        $namaBulan = date('F', mktime(0, 0, 0, $selectedMonth, 10));
-        $labelWaktu = "Bulan $namaBulan $selectedYear";
-    } else {
-        // Fallback jika tidak ada filter cocok
-        $queryPenjualan->whereDate('created_at', now()->today());
-        $labelWaktu = "Hari Ini (" . now()->format('d M Y') . ")";
+        if ($filterType === 'hari_ini') {
+            $queryPenjualan->whereDate('created_at', now()->today());
+            $labelWaktu = "Hari Ini (" . now()->format('d M Y') . ")";
+        } elseif ($filterType === 'kustom_tanggal' && $selectedDate) {
+            $queryPenjualan->whereDate('created_at', $selectedDate);
+            $labelWaktu = "Tanggal " . date('d M Y', strtotime($selectedDate));
+        } elseif ($filterType === 'bulanan') {
+            $queryPenjualan->whereRaw("EXTRACT(MONTH FROM created_at) = ?", [$selectedMonth])
+                           ->whereRaw("EXTRACT(YEAR FROM created_at) = ?", [$selectedYear]);
+            $namaBulan = date('F', mktime(0, 0, 0, $selectedMonth, 10));
+            $labelWaktu = "Bulan $namaBulan $selectedYear";
+        } else {
+            $queryPenjualan->whereDate('created_at', now()->today());
+            $labelWaktu = "Hari Ini (" . now()->format('d M Y') . ")";
+        }
+
+        $totalPenjualan = $queryPenjualan->sum('total_harga') ?? 0; 
+        $totalTransaksiCount = $queryPenjualan->count();
+        $listPenjualan = $queryPenjualan->latest()->paginate(10)->withQueryString();
+
+        $stokKritis = Barang::where('stok', '<=', 10)
+                            ->orderBy('stok', 'asc')
+                            ->get();
+
+        return view('laporan', compact(
+            'totalPenjualan', 'totalTransaksiCount', 'listPenjualan', 
+            'stokKritis', 'labelWaktu', 'filterType', 'selectedDate', 
+            'selectedMonth', 'selectedYear'
+        ));
     }
 
-    // Hitung Total Omset & Total Transaksi berdasarkan filter di atas
-    $totalPenjualan = $queryPenjualan->sum('total_harga'); 
-    $totalTransaksiCount = $queryPenjualan->count();
-    
-    // Ambil list detail item transaksi terlaris/terbaru untuk ditampilkan di tabel laporan
-    $listPenjualan = $queryPenjualan->latest()->paginate(10)->withQueryString();
-
-    // 3. FITUR STOK MENIPIS (Ambil produk yang stoknya <= 10)
-    // Otomatis kasih warning buat admin toko
-    $stokKritis = Barang::where('stok', '<=', 10)
-                        ->orderBy('stok', 'asc')
-                        ->get();
-
-    // 4. Oper semua data ke view laporan
-    return view('laporan', compact(
-        'totalPenjualan', 
-        'totalTransaksiCount', 
-        'listPenjualan', 
-        'stokKritis', 
-        'labelWaktu',
-        'filterType',
-        'selectedDate',
-        'selectedMonth',
-        'selectedYear'
-    ));
-}
-
-
-    public function destroyBulk(Request $request) {
+    /**
+     * Fitur Custom: Hapus Massal via Checkbox Terpilih (Bulk Delete)
+     * Nama fungsi disinkronkan menjadi bulkDelete agar sesuai rute web.php
+     */
+    public function bulkDelete(Request $request) {
         $ids = $request->ids;
-        if ($ids) {
+        if ($ids && is_array($ids)) {
             Barang::whereIn('id', $ids)->delete();
             return response()->json(['success' => true]);
         }
-        return response()->json(['error' => 'Tidak ada data'], 400);
+        return response()->json(['error' => 'Tidak ada data barang terpilih'], 400);
     }
 }

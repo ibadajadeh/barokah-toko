@@ -6,23 +6,17 @@ use Illuminate\Support\Facades\Schema;
 
 return new class extends Migration
 {
-    /**
-     * Run the migrations.
-     */
     public function up(): void
     {
         Schema::create('transaksis', function (Blueprint $table) {
-            $table->id(); // Ini akan jadi nomor nota otomatis (#1, #2, dst)
-            $table->integer('total_harga'); // Menyimpan total belanja nota kasir
-            $table->integer('bayar')->nullable(); // Jumlah uang yang dibayarkan pembeli
-            $table->integer('kembali')->nullable(); // Uang kembalian
-            $table->timestamps(); // Mengisi otomatis kolom 'created_at' dan 'updated_at' (Buat tracking tanggal)
+            $table->id();
+            $table->bigInteger('total_harga'); // Pakai bigInteger biar aman di Postgres
+            $table->bigInteger('bayar')->nullable();
+            $table->bigInteger('kembali')->nullable();
+            $table->timestamps(); // Postgres akan otomatis handle timestamp dengan timezone standar
         });
     }
 
-    /**
-     * Reverse the migrations.
-     */
     public function down(): void
     {
         Schema::dropIfExists('transaksis');

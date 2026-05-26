@@ -29,9 +29,16 @@ Route::middleware('auth')->group(function () {
     Route::get('/laporan', [BarangController::class, 'laporan'])->name('laporan.index');
     
     // 4. FITUR MANIPULASI DATA BARANG (CRUD & IMPORT)
-    Route::delete('/barang/{id}', [BarangController::class, 'destroy'])->name('barang.destroy'); // <-- Fix Error barang.destroy
+    // Note: bulk-delete ditaruh di atas route wildcard {id} biar gak tabrakan
     Route::post('/barang/bulk-delete', [BarangController::class, 'bulkDelete'])->name('barang.bulkDelete');
     Route::post('/import-csv', [BarangController::class, 'importCsv'])->name('barang.import');
+    
+    // ⬇️ TAMBAHAN RUTE UNTUK FORM TAMBAH & EDIT BARANG DI INVENTARIS ⬇️
+    Route::post('/barang', [BarangController::class, 'store'])->name('barang.store');
+    Route::put('/barang/{id}', [BarangController::class, 'update'])->name('barang.update');
+    
+    // HAPUS DATA BARANG
+    Route::delete('/barang/{id}', [BarangController::class, 'destroy'])->name('barang.destroy');
     
     // 5. FITUR TRANSAKSI KASIR POS
     Route::post('/transaksi', [BarangController::class, 'transaksi'])->name('barang.transaksi');
